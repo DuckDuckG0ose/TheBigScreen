@@ -53,6 +53,7 @@ public final class WatchPartyPlugin extends JavaPlugin {
         boolean lutBuildOnStartup = getConfig().getBoolean("lutBuildOnStartup", true);
         double renderRadiusBlocks = getConfig().getDouble("renderRadiusBlocks", 64.0);
         boolean hideFrameBorder   = getConfig().getBoolean("hideFrameBorder", true);
+        long   bandwidthLimitKbps = getConfig().getLong("bandwidthLimitKbps", 0L);
         String placeholderImagePath = getConfig().getString("placeholderImage", "");
 
         getLogger().info("TheBigScreen™ enabling — fakeMapIdStart=" + fakeMapIdStart
@@ -68,7 +69,8 @@ public final class WatchPartyPlugin extends JavaPlugin {
         }
 
         // ── Packet sender ─────────────────────────────────────────────────────
-        packetSender = new PacketSender(getLogger(), hideFrameBorder);
+        packetSender = new PacketSender(getLogger(), hideFrameBorder,
+                bandwidthLimitKbps * 1024L);
 
         // ── Registry ──────────────────────────────────────────────────────────
         registry = new ScreenRegistry(this);

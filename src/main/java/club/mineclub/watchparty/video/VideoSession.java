@@ -210,19 +210,25 @@ public final class VideoSession {
 
         try {
             long t0 = System.nanoTime();
-            BufferedImage img = frameDecoder.grabNextFrame();
+            BufferedImage img = frameDecoder.grabRealtime();
             if (img == null) {
-                // Stream ended normally
-                logger.info("[TheBigScreen™] Stream ended for '" + screen.getName() + "'. Attempting reconnect.");
-                frameDecoder.close();
-                frameDecoder = null;
+                if (frameDecoder.isExhausted()) {
+                    // Stream ended normally
+                    logger.info("[TheBigScreen™] Stream ended for '" + screen.getName() + "'. Attempting reconnect.");
+                    frameDecoder.close();
+                    frameDecoder = null;
+                }
+                // Otherwise it was a backpressure skip — try again next tick.
                 return;
             }
             totalDecodeNs.addAndGet(System.nanoTime() - t0);
 
             // Non-blocking offer: drop the new frame if the convert thread is busy
-            // (backpressure) rather than blocking the scheduler
-            rawQueue.offer(img);
+            // (backpressure) rather than blocking the scheduler. Release the
+            // buffer so it can be recycled.
+            if (!rawQueue.offer(img)) {
+                frameDecoder.release(img);
+            }
         } catch (org.bytedeco.javacv.FrameGrabber.Exception e) {
             logger.warning("[TheBigScreen™] Decode error on '" + screen.getName() + "': " + e.getMessage());
             if (frameDecoder != null) { frameDecoder.close(); frameDecoder = null; }
@@ -236,37 +242,43 @@ public final class VideoSession {
                 BufferedImage img = rawQueue.poll(50, TimeUnit.MILLISECONDS);
                 if (img == null) continue;
 
-                long t0 = System.nanoTime();
-                
-                // Pluggable Overlay Rendering Phase
-                java.awt.Graphics2D g2d = img.createGraphics();
-                long fIndex = frameCount.get();
-                for (OverlayRenderer r : overlayRegistry.getAll()) {
-                    try {
-                        r.render(g2d, screen.getName(), fIndex);
-                    } catch (Exception e) {
-                        logger.warning("[TheBigScreen™] Overlay error on " + screen.getName() + ": " + e.getMessage());
+                try {
+                    long t0 = System.nanoTime();
+
+                    // Pluggable Overlay Rendering Phase
+                    java.awt.Graphics2D g2d = img.createGraphics();
+                    long fIndex = frameCount.get();
+                    for (OverlayRenderer r : overlayRegistry.getAll()) {
+                        try {
+                            r.render(g2d, screen.getName(), fIndex);
+                        } catch (Exception e) {
+                            logger.warning("[TheBigScreen™] Overlay error on " + screen.getName() + ": " + e.getMessage());
+                        }
                     }
-                }
-                g2d.dispose();
+                    g2d.dispose();
 
-                byte[][][] maps = palette.convertFrame(img, screen.getWidthMaps(), screen.getHeightMaps());
-                totalConvertNs.addAndGet(System.nanoTime() - t0);
+                    byte[][][] maps = palette.convertFrame(img, screen.getWidthMaps(), screen.getHeightMaps());
+                    totalConvertNs.addAndGet(System.nanoTime() - t0);
 
-                // Build dirty map: only include slots that changed vs last frame
-                byte[][][] dirty = buildDirtyMap(maps);
+                    // Build dirty map: only include slots that changed vs last frame
+                    byte[][][] dirty = buildDirtyMap(maps);
 
-                // Non-blocking offer — drop if send thread is behind
-                if (!mapQueue.offer(dirty)) {
-                    mapQueue.poll(); // discard head
-                    mapQueue.offer(dirty);
-                }
-
-                // Update last-frame cache for all slots
-                for (int row = 0; row < screen.getHeightMaps(); row++) {
-                    for (int col = 0; col < screen.getWidthMaps(); col++) {
-                        screen.setLastFrameBytes(row, col, maps[row][col]);
+                    // Non-blocking offer — drop if send thread is behind
+                    if (!mapQueue.offer(dirty)) {
+                        mapQueue.poll(); // discard head
+                        mapQueue.offer(dirty);
                     }
+
+                    // Update last-frame cache for all slots
+                    for (int row = 0; row < screen.getHeightMaps(); row++) {
+                        for (int col = 0; col < screen.getWidthMaps(); col++) {
+                            screen.setLastFrameBytes(row, col, maps[row][col]);
+                        }
+                    }
+                } finally {
+                    // Return the decode buffer to the free pool.
+                    FrameDecoder fd = frameDecoder;
+                    if (fd != null) fd.release(img);
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();

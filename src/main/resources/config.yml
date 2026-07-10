@@ -43,6 +43,15 @@ renderRadiusBlocks: 64
 # Sends EntityMetadata to set the item frame as "invisible".
 hideFrameBorder: true
 
+# ── Bandwidth limiter ───────────────────────────────────────────────────────
+# Global outbound cap for all screens combined, in kilobits per second (kbps).
+# 0 = unlimited (original behaviour).  Set this to protect player connections
+# from being flooded by large / high-frame-rate screens.  Example: 8192 = 8 Mbps.
+# When exceeded, frame sending is throttled (slightly increasing video latency)
+# rather than saturating the connection.  This is a SAFETY NET — prefer tuning
+# targetFps and screen size first for the best visual result.
+bandwidthLimitKbps: 0
+
 # ── Placeholder Image ────────────────────────────────────────────────────────
 # Relative path (inside the plugin's folder) or absolute path to a PNG/JPG image.
 # If configured, this image will display on the screen when no video is playing

@@ -79,10 +79,30 @@ public final class PacketSender {
     private final Logger           logger;
     private final boolean          hideFrameBorder;
 
+    // Global outbound bandwidth cap (bytes/sec). 0 = unlimited. Shared across
+    // all screens so one giant screen cannot starve every player's connection.
+    private final long             bandwidthLimitBps;
+
+    // ── Reflection caches (resolved once, reused for every packet) ────────────
+    // Selected ClientboundMapItemDataPacket constructor.
+    private volatile java.lang.reflect.Constructor<?> cachedMapCtor;
+    // Selected MapPatch constructor + whether it takes (x,z,w,h,pixels) vs (x,z,pixels).
+    private volatile java.lang.reflect.Constructor<?> cachedMapPatchCtor;
+    private volatile boolean         mapPatch5Arg;
+
+    // Token-bucket state for the bandwidth pacer.
+    private long                     paceWindowStartNs = System.nanoTime();
+    private long                     paceSentBytes     = 0;
+
     public PacketSender(Logger logger, boolean hideFrameBorder) {
-        this.protocol        = ProtocolLibrary.getProtocolManager();
-        this.logger          = logger;
-        this.hideFrameBorder = hideFrameBorder;
+        this(logger, hideFrameBorder, 0L);
+    }
+
+    public PacketSender(Logger logger, boolean hideFrameBorder, long bandwidthLimitBps) {
+        this.protocol           = ProtocolLibrary.getProtocolManager();
+        this.logger             = logger;
+        this.hideFrameBorder    = hideFrameBorder;
+        this.bandwidthLimitBps  = bandwidthLimitBps;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -127,6 +147,11 @@ public final class PacketSender {
      * Sends map-pixel updates for the dirty slots in a frame.
      * Only sends packets for slots where {@code dirtyMaps[row][col] != null}.
      *
+     * <p>Each changed tile is converted into a {@link PacketContainer} exactly
+     * once and then sent to every target player — the packet payload for a
+     * given tile is identical across recipients, so rebuilding it per-player
+     * would be pure wasted CPU and reflection.</p>
+     *
      * @param players   Target players (typically those within render radius).
      * @param screen    The screen being updated.
      * @param dirtyMaps [row][col] — non-null only for changed slots.
@@ -139,14 +164,23 @@ public final class PacketSender {
         int rows = screen.getHeightMaps();
         int cols = screen.getWidthMaps();
 
-        for (Player player : players) {
-            for (int row = 0; row < rows; row++) {
-                for (int col = 0; col < cols; col++) {
-                    byte[] data = dirtyMaps[row][col];
-                    if (data != null) {
-                        sendMapData(player, screen.getFakeMapIds()[row][col], data);
-                    }
+        // Build one packet per dirty tile (shared across all players).
+        java.util.List<PacketContainer> packets = new java.util.ArrayList<>();
+        for (int row = 0; row < rows; row++) {
+            for (int col = 0; col < cols; col++) {
+                byte[] data = dirtyMaps[row][col];
+                if (data != null) {
+                    PacketContainer pkt = buildMapPacket(
+                            screen.getFakeMapIds()[row][col], data);
+                    if (pkt != null) packets.add(pkt);
                 }
+            }
+        }
+        if (packets.isEmpty()) return;
+
+        for (Player player : players) {
+            for (PacketContainer pkt : packets) {
+                sendPacket(player, pkt);
             }
         }
     }
@@ -256,59 +290,68 @@ public final class PacketSender {
     private volatile Class<?> cachedMapPatchClass  = null;
     private volatile Class<?> cachedMapIdClass     = null;
     private volatile Class<?> cachedMapPacketClass = null;
+    private volatile java.lang.reflect.Constructor<?> cachedMapIdCtor = null;
 
     /**
      * Sends a MAP packet containing the full 128×128 pixel data for one map tile.
      *
      * <p>Since MC 1.20.5 the {@code ClientboundMapItemDataPacket} is an immutable Java
      * record whose fields are not accessible via plain {@code getIntegers()}.  We build
-     * the NMS packet directly with reflection and wrap it in a {@link PacketContainer}.
+     * the NMS packet directly with reflection (resolved once and cached) and wrap it in
+     * a {@link PacketContainer}.  The returned container is safe to reuse for multiple
+     * players because ProtocolLib serialises it per recipient channel.
+     *
+     * @return a ready-to-send {@link PacketContainer}, or {@code null} if the NMS
+     *         classes could not be resolved.
      */
-    public void sendMapData(Player player, int mapId, byte[] data) {
+    public PacketContainer buildMapPacket(int mapId, byte[] data) {
         try {
-            // ── Lazy-init NMS class references ───────────────────────────────
+            // ── Lazy-init + cache NMS class references (once) ──────────────────
             if (cachedMapIdClass == null) {
                 cachedMapIdClass = Class.forName(
                         "net.minecraft.world.level.saveddata.maps.MapId");
                 cachedMapPacketClass = Class.forName(
                         "net.minecraft.network.protocol.game.ClientboundMapItemDataPacket");
                 cachedMapPatchClass  = resolveMapPatchClass(cachedMapPacketClass);
+                if (cachedMapPatchClass != null) {
+                    cacheMapPatchCtor();
+                }
+                cacheMapCtor();
+            }
+
+            if (cachedMapPatchClass == null || cachedMapCtor == null) {
+                return null; // Already warned during resolution.
             }
 
             // ── Build MapId ───────────────────────────────────────────────────
-            Object nmsMapId = cachedMapIdClass.getConstructor(int.class).newInstance(mapId);
-
-            if (cachedMapPatchClass == null) {
-                // Already warned on first attempt — skip silently on subsequent calls.
-                return;
+            if (cachedMapIdCtor == null) {
+                cachedMapIdCtor = cachedMapIdClass.getConstructor(int.class);
+                cachedMapIdCtor.setAccessible(true);
             }
+            Object nmsMapId = cachedMapIdCtor.newInstance(mapId);
 
-            // ── Build MapPatch ────────────────────────────────────────────────
-            // Try 5-arg form first (startX, startZ, width, height, mapColors),
-            // fall back to 4-arg form if this version omits the explicit height.
-            Object mapPatch;
-            try {
-                mapPatch = cachedMapPatchClass
-                        .getConstructor(int.class, int.class, int.class, int.class, byte[].class)
-                        .newInstance(0, 0, 128, 128, data);
-            } catch (NoSuchMethodException e) {
-                mapPatch = cachedMapPatchClass
-                        .getConstructor(int.class, int.class, int.class, byte[].class)
-                        .newInstance(0, 0, 128, data);
-            }
+            // ── Build MapPatch (cached constructor) ───────────────────────────
+            Object mapPatch = mapPatch5Arg
+                    ? cachedMapPatchCtor.newInstance(0, 0, 128, 128, data)
+                    : cachedMapPatchCtor.newInstance(0, 0, 128, data);
 
-            // ── Construct the NMS record ──────────────────────────────────────
-            Object nmsPacket = buildMapPacketInstance(
-                    cachedMapPacketClass, cachedMapIdClass, mapId, nmsMapId, mapPatch);
+            // ── Construct the NMS record (cached constructor) ─────────────────
+            Object nmsPacket = cachedMapCtor.newInstance(
+                    buildMapArgs(cachedMapCtor, mapId, nmsMapId, mapPatch));
 
-            // ── Wrap + send ───────────────────────────────────────────────────
-            PacketContainer pkt = new PacketContainer(PacketType.Play.Server.MAP, nmsPacket);
-            sendPacket(player, pkt);
+            return new PacketContainer(PacketType.Play.Server.MAP, nmsPacket);
 
         } catch (Exception e) {
             logger.warning("[WatchParty] MAP packet error for mapId=" + mapId
                     + ": " + e.getClass().getSimpleName() + " — " + e.getMessage());
+            return null;
         }
+    }
+
+    /** Builds the NMS packet and sends it to a single player. */
+    public void sendMapData(Player player, int mapId, byte[] data) {
+        PacketContainer pkt = buildMapPacket(mapId, data);
+        if (pkt != null) sendPacket(player, pkt);
     }
 
     /**
@@ -316,48 +359,30 @@ public final class PacketSender {
      * {@code ClientboundMapItemDataPacket} using three progressive strategies:
      * <ol>
      *   <li>Direct {@code $MapPatch} class name lookup.</li>
-     *   <li>Name-pattern scan of all declared inner classes (logs every name found).</li>
+     *   <li>Name-pattern scan of all declared inner classes.</li>
      *   <li>Generic type extraction from the canonical constructor's last
      *       {@code Optional} parameter.</li>
      * </ol>
+     * This runs at most once per plugin instance (when the first MAP packet is
+     * built) and only logs diagnostics on that single occasion.
      */
     @SuppressWarnings("unchecked")
     private Class<?> resolveMapPatchClass(Class<?> pktClass) {
-        // Log all constructors of the packet class for diagnostics
-        logger.info("[WatchParty] Constructor dump for ClientboundMapItemDataPacket:");
-        for (java.lang.reflect.Constructor<?> ctor : pktClass.getDeclaredConstructors()) {
-            StringBuilder sb = new StringBuilder("  - (");
-            for (Class<?> p : ctor.getParameterTypes()) {
-                sb.append(p.getSimpleName()).append(", ");
-            }
-            if (ctor.getParameterCount() > 0) sb.setLength(sb.length() - 2);
-            sb.append(")");
-            logger.info(sb.toString());
-        }
-
         // Strategy 1 — direct $MapPatch lookup (Mojang mapped name)
         try {
             return Class.forName(pktClass.getName() + "$MapPatch");
         } catch (ClassNotFoundException ignored) { }
 
-        // Strategy 2 — scan declared inner classes; log names to help future debugging
+        // Strategy 2 — scan declared inner classes.
         Class<?>[] inner = pktClass.getDeclaredClasses();
-        StringBuilder names = new StringBuilder();
         for (Class<?> c : inner) {
-            names.append(c.getName()).append(' ');
             String sn = c.getSimpleName().toLowerCase(java.util.Locale.ROOT);
             if (sn.contains("patch") || sn.contains("color") || sn.contains("map")) {
-                logger.info("[WatchParty] Resolved MapPatch via name scan: " + c.getName());
                 return c;
             }
         }
-        // If nothing matched, log what IS there so the name can be added above.
-        if (inner.length > 0) {
-            logger.warning("[WatchParty] MapPatch not found by name. Inner classes of "
-                    + pktClass.getSimpleName() + ": " + names.toString().trim());
-        }
 
-        // Strategy 3 — extract from canonical constructor's generic Optional parameter
+        // Strategy 3 — extract from canonical constructor's generic Optional parameter.
         for (java.lang.reflect.Constructor<?> ctor : pktClass.getDeclaredConstructors()) {
             java.lang.reflect.Type[] types = ctor.getGenericParameterTypes();
             for (java.lang.reflect.Type t : types) {
@@ -368,21 +393,6 @@ public final class PacketSender {
                             && candidate != java.util.List.class
                             && !candidate.getName().contains("MapDecoration")
                             && !candidate.getName().contains("List")) {
-                        logger.info("[WatchParty] Resolved MapPatch via generic types: "
-                                + candidate.getName());
-                        
-                        // Dump constructors of the resolved MapPatch candidate
-                        logger.info("[WatchParty] Constructor dump for MapPatch class:");
-                        for (java.lang.reflect.Constructor<?> c : candidate.getDeclaredConstructors()) {
-                            StringBuilder sb = new StringBuilder("  - (");
-                            for (Class<?> p : c.getParameterTypes()) {
-                                sb.append(p.getSimpleName()).append(", ");
-                            }
-                            if (c.getParameterCount() > 0) sb.setLength(sb.length() - 2);
-                            sb.append(")");
-                            logger.info(sb.toString());
-                        }
-                        
                         return candidate;
                     }
                 }
@@ -390,77 +400,96 @@ public final class PacketSender {
         }
 
         logger.warning("[WatchParty] Could not resolve MapPatch class in any way."
-                + " MAP packets will be skipped. Check the inner class names logged above.");
+                + " MAP packets will be skipped. Packet: " + pktClass.getName());
         return null;
     }
 
-    /** Constructs the {@code ClientboundMapItemDataPacket} NMS record via reflection. */
-    private Object buildMapPacketInstance(
-            Class<?> pktClass, Class<?> mapIdClass, int mapId,
-            Object nmsMapId, Object mapPatch) throws Exception {
+    /** Picks and caches the best MapPatch constructor (5-arg preferred). */
+    private void cacheMapPatchCtor() {
+        java.lang.reflect.Constructor<?> c5 = null, c4 = null;
+        for (java.lang.reflect.Constructor<?> c : cachedMapPatchClass.getDeclaredConstructors()) {
+            int n = c.getParameterCount();
+            if (n == 5) c5 = c;
+            else if (n == 4) c4 = c;
+        }
+        cachedMapPatchCtor = (c5 != null) ? c5 : c4;
+        mapPatch5Arg = (c5 != null);
+        cachedMapPatchCtor.setAccessible(true);
+    }
 
-        // Dynamically inspect constructors to find one we can fulfill.
-        // Sort them so that the one with Optional parameters (the canonical record constructor) is checked first.
-        java.util.List<java.lang.reflect.Constructor<?>> sortedCtors = new java.util.ArrayList<>();
-        for (java.lang.reflect.Constructor<?> ctor : pktClass.getDeclaredConstructors()) {
+    /**
+     * Selects and caches the {@code ClientboundMapItemDataPacket} constructor.
+     * Preference is given to the canonical record constructor that carries an
+     * {@link Optional} (the MapPatch), then any constructor we can fulfil.
+     */
+    private void cacheMapCtor() {
+        java.util.List<java.lang.reflect.Constructor<?>> candidates = new java.util.ArrayList<>();
+        for (java.lang.reflect.Constructor<?> ctor : cachedMapPacketClass.getDeclaredConstructors()) {
             boolean hasOptional = false;
             for (Class<?> p : ctor.getParameterTypes()) {
-                if (p == Optional.class) {
-                    hasOptional = true;
-                    break;
-                }
+                if (p == Optional.class) { hasOptional = true; break; }
             }
-            if (hasOptional) {
-                sortedCtors.add(0, ctor); // Put at front
-            } else {
-                sortedCtors.add(ctor);    // Put at back
-            }
+            if (hasOptional) candidates.add(0, ctor);
+            else candidates.add(ctor);
         }
 
-        for (java.lang.reflect.Constructor<?> ctor : sortedCtors) {
+        for (java.lang.reflect.Constructor<?> ctor : candidates) {
             Class<?>[] paramTypes = ctor.getParameterTypes();
-            Object[] args = new Object[paramTypes.length];
             boolean matches = true;
-
-            for (int i = 0; i < paramTypes.length; i++) {
-                Class<?> type = paramTypes[i];
-
-                if (type == mapIdClass) {
-                    args[i] = nmsMapId;
-                } else if (type == int.class || type == Integer.class) {
-                    // Older versions use primitive int for Map ID
-                    args[i] = mapId;
-                } else if (type == byte.class || type == Byte.class) {
-                    args[i] = (byte) 0; // scale
-                } else if (type == boolean.class || type == Boolean.class) {
-                    args[i] = false; // locked or trackingPosition = false
-                } else if (type == Optional.class) {
-                    // Could be Optional<MapPatch> or Optional<List<MapDecoration>>
-                    java.lang.reflect.Type genType = ctor.getGenericParameterTypes()[i];
-                    if (genType.toString().contains("MapPatch") || genType.toString().contains("Patch")) {
-                        args[i] = Optional.of(mapPatch);
-                    } else {
-                        args[i] = Optional.empty(); // decorations or other optionals
-                    }
-                } else if (type == java.util.Collection.class || type == java.util.List.class) {
-                    args[i] = java.util.Collections.emptyList(); // decorations list
-                } else if (type == cachedMapPatchClass) {
-                    args[i] = mapPatch; // Raw MapPatch parameter
+            for (Class<?> type : paramTypes) {
+                if (type == cachedMapIdClass
+                        || type == int.class || type == Integer.class
+                        || type == byte.class || type == Byte.class
+                        || type == boolean.class || type == Boolean.class
+                        || type == Optional.class
+                        || type == java.util.Collection.class || type == java.util.List.class
+                        || type == cachedMapPatchClass) {
+                    // compatible
                 } else {
-                    // Unknown type, cannot fulfill constructor
                     matches = false;
                     break;
                 }
             }
-
             if (matches) {
-                logger.info("[WatchParty] Selected constructor: " + ctor.toString());
-                ctor.setAccessible(true);
-                return ctor.newInstance(args);
+                cachedMapCtor = ctor;
+                cachedMapCtor.setAccessible(true);
+                return;
             }
         }
+        logger.warning("[WatchParty] Could not find a compatible constructor for "
+                + cachedMapPacketClass.getName() + ". MAP packets will be skipped.");
+    }
 
-        throw new NoSuchMethodException("Could not find a compatible constructor for " + pktClass.getName());
+    /** Builds the argument array for the (cached) MAP packet constructor. */
+    private Object[] buildMapArgs(java.lang.reflect.Constructor<?> ctor, int mapId,
+                                  Object nmsMapId, Object mapPatch) {
+        Class<?>[] paramTypes = ctor.getParameterTypes();
+        java.lang.reflect.Type[] genTypes = ctor.getGenericParameterTypes();
+        Object[] args = new Object[paramTypes.length];
+        for (int i = 0; i < paramTypes.length; i++) {
+            Class<?> type = paramTypes[i];
+            if (type == cachedMapIdClass) {
+                args[i] = nmsMapId;
+            } else if (type == int.class || type == Integer.class) {
+                args[i] = mapId;
+            } else if (type == byte.class || type == Byte.class) {
+                args[i] = (byte) 0; // scale
+            } else if (type == boolean.class || type == Boolean.class) {
+                args[i] = false; // locked / trackingPosition = false
+            } else if (type == Optional.class) {
+                String gen = genTypes[i].toString();
+                if (gen.contains("MapPatch") || gen.contains("Patch")) {
+                    args[i] = Optional.of(mapPatch);
+                } else {
+                    args[i] = Optional.empty();
+                }
+            } else if (type == java.util.Collection.class || type == java.util.List.class) {
+                args[i] = java.util.Collections.emptyList(); // decorations
+            } else if (type == cachedMapPatchClass) {
+                args[i] = mapPatch; // raw MapPatch parameter
+            }
+        }
+        return args;
     }
 
     /** Sends ENTITY_DESTROY for a batch of entity IDs. */
@@ -528,11 +557,43 @@ public final class PacketSender {
     // ─────────────────────────────────────────────────────────────────────────
 
     private void sendPacket(Player player, PacketContainer pkt) {
+        // Pace outbound traffic so a large screen cannot flood a player's
+        // connection.  MAP packets dominate bandwidth (~16 KB each); metadata
+        // and spawn packets are negligible, so we estimate by packet type.
+        if (bandwidthLimitBps > 0) {
+            long bytes = (pkt.getType() == PacketType.Play.Server.MAP) ? (128L * 128L) : 256L;
+            pace(bytes);
+        }
         try {
             protocol.sendServerPacket(player, pkt);
         } catch (Exception e) {
             logger.warning("[WatchParty] Failed to send " + pkt.getType() +
                     " to " + player.getName() + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Token-bucket pacer.  Sleeps (on the calling send thread) just enough to
+     * keep the rolling 1-second average at or below {@link #bandwidthLimitBps}.
+     * A limit of 0 disables pacing entirely.
+     */
+    private synchronized void pace(long bytes) {
+        long now = System.nanoTime();
+        if (now - paceWindowStartNs >= 1_000_000_000L) {
+            paceWindowStartNs = now;
+            paceSentBytes = 0;
+        }
+        paceSentBytes += bytes;
+        if (paceSentBytes > bandwidthLimitBps) {
+            long excess = paceSentBytes - bandwidthLimitBps;
+            long sleepNs = (excess * 1_000_000_000L) / bandwidthLimitBps;
+            if (sleepNs > 0) {
+                try {
+                    Thread.sleep(sleepNs / 1_000_000, (int) (sleepNs % 1_000_000));
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
     }
 }
