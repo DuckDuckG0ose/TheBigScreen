@@ -1,0 +1,47 @@
+TheBigScreen™ — WatchParty Plugin
+Copyright (c) 2026 WmWi. All rights reserved.
+
+1. OWNERSHIP
+   This software, including all source code, compiled binaries, build
+   artifacts, and derivative works (collectively, the "Software"), is the
+   exclusive property of the copyright holder. All rights not expressly
+   granted herein are reserved.
+
+2. LICENSE GRANT
+   NO LICENSE IS GRANTED. The Software is provided for private, internal use
+   by the copyright holder only. There is no permission, express or implied,
+   to use, run, host, deploy, or operate the Software in any environment
+   other than those explicitly authorised by the copyright holder.
+
+3. PROHIBITED USES
+   Without prior written permission from the copyright holder, you may NOT:
+     (a) use the Software, in whole or in part, for any purpose;
+     (b) copy, reproduce, duplicate, or store the Software, in whole or in
+         part, in any form (including source code, object code, or binary);
+     (c) distribute, publish, sublicense, sell, resell, lease, lend, rent,
+         share, or otherwise make the Software available to any third party;
+     (d) modify, adapt, translate, reverse engineer, decompile, or
+         disassemble the Software, in whole or in part;
+     (e) profit from, commercialise, or derive any financial or commercial
+         benefit from the Software or any part thereof.
+
+   The restrictions above apply equally to:
+     - raw / human-readable source code,
+     - compiled binaries, jars, and other build outputs,
+     - any partial extracts, snippets, or copied portions of the Software.
+
+4. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL
+   THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY
+   ARISING FROM THE SOFTWARE.
+
+5. TERMINATION
+   Any unauthorised use, copying, distribution, or profit-making terminates
+   any (non-existent) permission immediately. The copyright holder may pursue
+   all legal remedies available.
+
+By accessing, viewing, or obtaining the Software, you agree to be bound by
+this license. If you do not agree, you must not access, use, copy, or retain
+any part of the Software.
