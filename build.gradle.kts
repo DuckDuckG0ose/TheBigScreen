@@ -28,7 +28,7 @@ val osClassifier: String = when {
 }
 
 val javacvVersion   = "1.5.11"
-val ffmpegVersion   = "6.1.1-1.5.11"
+val ffmpegPlatformVersion = "7.1-1.5.11"  // matches javacv 1.5.11's ffmpeg
 val paperVersion    = "1.21.4-R0.1-SNAPSHOT"
 // ProtocolLib 5.3.0 is the latest stable build; bump to dev build if needed:
 // https://github.com/dmulloy2/ProtocolLib/releases
@@ -41,11 +41,25 @@ dependencies {
     compileOnly("com.comphenix.protocol:ProtocolLib:$protocolLibVersion")
 
     // JavaCV core (no native) + platform-specific FFmpeg natives
-    implementation("org.bytedeco:javacv:$javacvVersion")
-    implementation("org.bytedeco:ffmpeg:$ffmpegVersion:$osClassifier")
+    implementation("org.bytedeco:javacv:$javacvVersion") {
+        // Exclude transitive ffmpeg-platform — we add it explicitly with classifier
+        exclude(group = "org.bytedeco", module = "ffmpeg")
+    }
+    implementation("org.bytedeco:ffmpeg:$ffmpegPlatformVersion:$osClassifier")
 
     // Gson for screen persistence (already on Paper classpath, but shade for safety)
     implementation("com.google.code.gson:gson:2.10.1")
+}
+
+// Include FFmpeg platform natives from the classifier-specific JAR
+// The ffmpeg-platform JAR contains .so/.dll/.dylib files under org/bytedeco/ffmpeg/<os>/
+val extractNatives = tasks.register("extractNatives", Copy::class) {
+    val ffmpegPlatformJar = configurations.named("runtimeClasspath").get().files
+        .first { it.name.startsWith("ffmpeg-$ffmpegPlatformVersion-$osClassifier") }
+    from(zipTree(ffmpegPlatformJar)) {
+        include("org/bytedeco/ffmpeg/$osClassifier/**")
+    }
+    into(layout.buildDirectory.dir("extracted-natives"))
 }
 
 tasks.shadowJar {
@@ -55,6 +69,13 @@ tasks.shadowJar {
     exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA")
     // Relocate Gson to avoid version conflicts with other plugins
     relocate("com.google.gson", "club.mineclub.watchparty.libs.gson")
+
+    // Include the extracted natives at the correct path
+    dependsOn(extractNatives)
+    val nativesDir = layout.buildDirectory.dir("extracted-natives/org/bytedeco/ffmpeg/$osClassifier").get().asFile
+    from(nativesDir) {
+        into("org/bytedeco/ffmpeg/$osClassifier")
+    }
 }
 
 // Make :build always produce the fat JAR
