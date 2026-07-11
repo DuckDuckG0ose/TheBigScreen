@@ -50,8 +50,12 @@ public final class FrameDecoder implements AutoCloseable {
     private final boolean[]      busy = {false, false};
 
     // Real-time anchors: map stream timestamp (µs) ↔ wall clock (ns).
-    private long                 streamStartUs;
-    private long                 wallStartNs;
+    // Initialized on the first successfully grabbed frame, NOT in start(),
+    // because grabber.getTimestamp() returns 0 before any frame is read,
+    // but HLS/live streams often start at a non-zero timestamp.
+    private long                 streamStartUs = -1;
+    private long                 wallStartNs   = -1;
+    private volatile boolean     timeInitialized = false;
 
     // Set when the grabber hits EOF so the caller can distinguish "ended"
     // from "skipped because no buffer was free".
@@ -103,10 +107,11 @@ public final class FrameDecoder implements AutoCloseable {
                     RenderingHints.VALUE_INTERPOLATION_BILINEAR);
         }
 
-        // Anchor real-time clocks to the moment the stream opens.
-        streamStartUs = grabber.getTimestamp();
-        wallStartNs   = System.nanoTime();
+        // Time anchors are initialized on first successful grab in grabRealtime()
+        // because grabber.getTimestamp() returns 0 before any frame is read,
+        // but HLS/live streams often start at a non-zero timestamp.
         exhausted     = false;
+        timeInitialized = false;
         started = true;
         logger.info("[WatchParty] Opened stream: " + streamUrl
                 + " (" + grabber.getImageWidth() + "x" + grabber.getImageHeight()
@@ -129,11 +134,6 @@ public final class FrameDecoder implements AutoCloseable {
     public BufferedImage grabRealtime() throws FFmpegFrameGrabber.Exception {
         ensureStarted();
 
-        // Where the stream "should" be, in stream timestamp microseconds,
-        // given how much real time has elapsed since we started.
-        long elapsedUs = (System.nanoTime() - wallStartNs) / 1000L;
-        long targetUs  = streamStartUs + elapsedUs;
-
         // Drain source frames until we reach the target real-time position.
         // Intermediate frames are skipped so playback stays at 1x speed even
         // when targetFps is lower than the source frame-rate.
@@ -142,6 +142,19 @@ public final class FrameDecoder implements AutoCloseable {
         while ((frame = grabber.grab()) != null) {
             if (frame.image == null) continue;
             last = frame;
+
+            // Initialize time mapping on the FIRST valid frame.
+            // grabber.getTimestamp() returns 0 before any frame is read,
+            // but HLS/live streams often start at a non-zero timestamp.
+            if (!timeInitialized) {
+                streamStartUs = grabber.getTimestamp();
+                wallStartNs   = System.nanoTime();
+                timeInitialized = true;
+            }
+
+            long elapsedUs = (System.nanoTime() - wallStartNs) / 1000L;
+            long targetUs  = streamStartUs + elapsedUs;
+
             if (grabber.getTimestamp() >= targetUs) break;
         }
 
@@ -150,6 +163,14 @@ public final class FrameDecoder implements AutoCloseable {
             return null;
         }
         exhausted = false;
+
+        // If time hasn't been initialized yet (first frame had no timestamp),
+        // fall back to wall-clock-only timing.
+        if (!timeInitialized) {
+            streamStartUs = 0;
+            wallStartNs   = System.nanoTime();
+            timeInitialized = true;
+        }
 
         BufferedImage src = converter.convert(last);
         if (src == null) return null;
@@ -193,13 +214,21 @@ public final class FrameDecoder implements AutoCloseable {
     public BufferedImage skipToLatest() throws FFmpegFrameGrabber.Exception {
         ensureStarted();
         long frameIntervalUs = 1_000_000L / Math.max(1, targetFps);
-        long wallUs          = System.nanoTime() / 1_000L;
+
+        // Initialize time mapping if not already done
+        if (!timeInitialized) {
+            streamStartUs = grabber.getTimestamp();
+            wallStartNs   = System.nanoTime();
+            timeInitialized = true;
+        }
 
         Frame last = null;
         Frame frame;
         while ((frame = grabber.grab()) != null) {
             if (frame.image == null) continue;
-            if (grabber.getTimestamp() >= wallUs - frameIntervalUs) {
+            long elapsedUs = (System.nanoTime() - wallStartNs) / 1000L;
+            long targetUs  = streamStartUs + elapsedUs;
+            if (grabber.getTimestamp() >= targetUs - frameIntervalUs) {
                 last = frame.clone(); // retain for conversion after loop
                 break;
             }

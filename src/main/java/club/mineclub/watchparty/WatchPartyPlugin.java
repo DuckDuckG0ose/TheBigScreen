@@ -55,6 +55,9 @@ public final class WatchPartyPlugin extends JavaPlugin {
         boolean hideFrameBorder   = getConfig().getBoolean("hideFrameBorder", true);
         long   bandwidthLimitKbps = getConfig().getLong("bandwidthLimitKbps", 0L);
         String placeholderImagePath = getConfig().getString("placeholderImage", "");
+        boolean youtubeEnabled   = getConfig().getBoolean("youtubeEnabled", true);
+        String  ytdlpPath        = getConfig().getString("ytdlpPath", "yt-dlp");
+        int     youtubeMaxHeight = getConfig().getInt("youtubeMaxHeight", 720);
 
         getLogger().info("TheBigScreen™ enabling — fakeMapIdStart=" + fakeMapIdStart
                 + ", targetFps=" + targetFps + ", renderRadius=" + (int) renderRadiusBlocks + " blocks");
@@ -86,11 +89,14 @@ public final class WatchPartyPlugin extends JavaPlugin {
 
         // ── Manager ───────────────────────────────────────────────────────────
         FakeEntityIdAllocator entityIdAllocator = new FakeEntityIdAllocator();
+        club.mineclub.watchparty.media.YouTubeResolver youTubeResolver =
+                new club.mineclub.watchparty.media.YouTubeResolver(
+                        getLogger(), ytdlpPath, youtubeMaxHeight, youtubeEnabled);
         manager = new ScreenManager(
                 registry, packetSender, palette, entityIdAllocator,
                 this, fakeMapIdStart, targetFps,
                 reconnectAttempts, reconnectDelayMs, renderRadiusBlocks,
-                overlayRegistry, mediaCacheManager, placeholderImagePath);
+                overlayRegistry, mediaCacheManager, placeholderImagePath, youTubeResolver);
 
         // ── Commands ──────────────────────────────────────────────────────────
         VideoScreenCommand cmdHandler = new VideoScreenCommand(manager, this);

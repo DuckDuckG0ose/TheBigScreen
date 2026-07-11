@@ -52,6 +52,18 @@ hideFrameBorder: true
 # targetFps and screen size first for the best visual result.
 bandwidthLimitKbps: 0
 
+# ── YouTube support ──────────────────────────────────────────────────────────
+# Allow pasting a YouTube watch/short/live link directly to /videoscreen start.
+# Requires the external "yt-dlp" tool to be installed on the server. Audio is
+# NOT played (the screens are video-only); only the video track is used.
+# See your OS package manager or https://github.com/yt-dlp/yt-dlp
+youtubeEnabled: true
+# Path/command used to launch yt-dlp. Use the full path if it is not on PATH,
+# e.g. "C:\\yt-dlp\\yt-dlp.exe" on Windows.
+ytdlpPath: "yt-dlp"
+# Maximum video height to request (e.g. 720, 1080). Lower = less bandwidth/CPU.
+youtubeMaxHeight: 720
+
 # ── Placeholder Image ────────────────────────────────────────────────────────
 # Relative path (inside the plugin's folder) or absolute path to a PNG/JPG image.
 # If configured, this image will display on the screen when no video is playing

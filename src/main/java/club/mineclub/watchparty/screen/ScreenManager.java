@@ -1,11 +1,13 @@
 package club.mineclub.watchparty.screen;
 
 import club.mineclub.watchparty.model.VideoScreen;
+import club.mineclub.watchparty.media.YouTubeResolver;
 import club.mineclub.watchparty.packet.FakeEntityIdAllocator;
 import club.mineclub.watchparty.packet.PacketSender;
 import club.mineclub.watchparty.render.MapPaletteConverter;
 import club.mineclub.watchparty.render.OverlayRegistry;
 import club.mineclub.watchparty.video.VideoSession;
+import club.mineclub.watchparty.media.MediaCacheManager;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -53,7 +55,12 @@ public final class ScreenManager {
     private volatile double renderRadiusBlocks;
     private volatile String placeholderImagePath;
 
-    private final club.mineclub.watchparty.media.MediaCacheManager mediaCacheManager;
+    private final MediaCacheManager mediaCacheManager;
+    private final YouTubeResolver   youTubeResolver;
+
+    // Tracks in-flight YouTube resolutions so a late callback can't start a
+    // session on a screen that was stopped/deleted while resolving.
+    private final ConcurrentHashMap<String, String> pendingYouTube = new ConcurrentHashMap<>();
 
     public ScreenManager(
             ScreenRegistry registry,
@@ -67,8 +74,9 @@ public final class ScreenManager {
             long reconnectDelayMs,
             double renderRadiusBlocks,
             OverlayRegistry overlayRegistry,
-            club.mineclub.watchparty.media.MediaCacheManager mediaCacheManager,
-            String placeholderImagePath) {
+            MediaCacheManager mediaCacheManager,
+            String placeholderImagePath,
+            YouTubeResolver youTubeResolver) {
         this.registry              = registry;
         this.packetSender          = packetSender;
         this.palette               = palette;
@@ -83,6 +91,7 @@ public final class ScreenManager {
         this.overlayRegistry       = overlayRegistry;
         this.mediaCacheManager     = mediaCacheManager;
         this.placeholderImagePath  = placeholderImagePath;
+        this.youTubeResolver       = youTubeResolver;
     }
 
     /** Updates live-reloadable config values without restarting sessions. */
@@ -191,6 +200,35 @@ public final class ScreenManager {
 
         screen.setCurrentStreamUrl(url);
 
+        // YouTube links: resolve to a direct stream URL via yt-dlp first.
+        if (youTubeResolver.isEnabled() && YouTubeResolver.isYouTubeUrl(url)) {
+            sender.sendMessage("§e[TheBigScreen™] Resolving YouTube link, this may take a moment…");
+            pendingYouTube.put(name, url);
+            youTubeResolver.resolve(url).thenAccept(resolved -> {
+                pendingYouTube.remove(name, url);
+                if (resolved == null) {
+                    sender.sendMessage("§c[TheBigScreen™] Could not resolve YouTube link. "
+                            + "Is yt-dlp installed and on PATH (or configured)?");
+                    if (screen.getCurrentStreamUrl() != null
+                            && screen.getCurrentStreamUrl().equals(url)) {
+                        screen.setCurrentStreamUrl(null);
+                    }
+                    return;
+                }
+                // Only start if this screen is still waiting on THIS url
+                // (not stopped, deleted, or pointed at another stream).
+                String current = screen.getCurrentStreamUrl();
+                if (current != null && current.equals(url)
+                        && screen.getState() != VideoScreen.State.RUNNING) {
+                    sender.sendMessage("§a[TheBigScreen™] YouTube link resolved! Starting playback for '" + name + "'.");
+                    // For audio we hand Lavaplayer the original YouTube URL so it
+                    // can resolve the audio track itself.
+                    startSessionForScreen(screen, resolved, url);
+                }
+            });
+            return true;
+        }
+
         if (mediaCacheManager.isStaticMedia(url)) {
             sender.sendMessage("§e[TheBigScreen™] Downloading static media to cache... this might take a moment.");
             mediaCacheManager.downloadMediaAsync(url).thenAccept(file -> {
@@ -199,19 +237,31 @@ public final class ScreenManager {
                     screen.setCurrentStreamUrl(null);
                     return;
                 }
-                
+
                 // Only start if the screen hasn't been deleted or another stream started while downloading
                 if (screen.getCurrentStreamUrl() != null && screen.getCurrentStreamUrl().equals(url)) {
                     sender.sendMessage("§a[TheBigScreen™] Download complete! Starting playback for '" + name + "'.");
-                    startVideoSession(screen, file.getAbsolutePath());
+                    // Video plays the cached file; audio plays the same file path.
+                    startSessionForScreen(screen, file.getAbsolutePath(), file.getAbsolutePath());
                 }
             });
         } else {
             sender.sendMessage("§a[TheBigScreen™] Started stream for '" + name + "' ← " + url);
-            startVideoSession(screen, url);
+            startSessionForScreen(screen, url, url);
         }
 
         return true;
+    }
+
+    /**
+     * Starts the video session and, if {@code screen} is the one selected for
+     * Discord audio, begins playing its audio track.  {@code videoSource} is what
+     * the in-game renderer decodes; {@code audioSource} is what Lavaplayer loads
+     * (for YouTube this is the original URL, for local/static media the file path).
+     */
+    private void startSessionForScreen(VideoScreen screen, String videoSource, String audioSource) {
+        startVideoSession(screen, videoSource);
+        // Audio bridge removed; audioSource is currently unused
     }
 
     private void startVideoSession(VideoScreen screen, String sourceUrl) {
@@ -225,6 +275,7 @@ public final class ScreenManager {
      * Stops the stream for the named screen.
      */
     public boolean stopStream(Player sender, String name) {
+        pendingYouTube.remove(name);
         VideoSession session = sessions.remove(name);
         if (session == null) {
             sender.sendMessage("§c[TheBigScreen™] '" + name + "' is not streaming.");
@@ -247,6 +298,7 @@ public final class ScreenManager {
      * Deletes a screen entirely (stops stream + removes from registry).
      */
     public boolean deleteScreen(Player sender, String name) {
+        pendingYouTube.remove(name);
         stopStream(sender, name); // no-op if not running
         if (!registry.exists(name)) {
             sender.sendMessage("§c[TheBigScreen™] No screen named '" + name + "'.");
