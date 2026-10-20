@@ -1,47 +1,49 @@
-TheBigScreen™ — WatchParty Plugin
+TheBigScreen - WatchParty Plugin
 Copyright (c) 2026 WmWi. All rights reserved.
 
-1. OWNERSHIP
-   This software, including all source code, compiled binaries, build
-   artifacts, and derivative works (collectively, the "Software"), is the
-   exclusive property of the copyright holder. All rights not expressly
-   granted herein are reserved.
+CUSTOM USE AND ATTRIBUTION LICENSE
 
-2. LICENSE GRANT
-   NO LICENSE IS GRANTED. The Software is provided for private, internal use
-   by the copyright holder only. There is no permission, express or implied,
-   to use, run, host, deploy, or operate the Software in any environment
-   other than those explicitly authorised by the copyright holder.
+1. Permission
+Subject to the conditions in this license, permission is granted to use,
+copy, modify, and distribute this software and its derivatives for any
+purpose.
 
-3. PROHIBITED USES
-   Without prior written permission from the copyright holder, you may NOT:
-     (a) use the Software, in whole or in part, for any purpose;
-     (b) copy, reproduce, duplicate, or store the Software, in whole or in
-         part, in any form (including source code, object code, or binary);
-     (c) distribute, publish, sublicense, sell, resell, lease, lend, rent,
-         share, or otherwise make the Software available to any third party;
-     (d) modify, adapt, translate, reverse engineer, decompile, or
-         disassemble the Software, in whole or in part;
-     (e) profit from, commercialise, or derive any financial or commercial
-         benefit from the Software or any part thereof.
+2. Attribution
+Any use, copy, modification, or distribution of this software must include
+visible credit identifying the original project as "TheBigScreen" and its
+owner as "DuckDuckG0ose (WmWi)", together with a clickable link to the
+original repository:
+https://github.com/DuckDuckG0ose/TheBigScreen
 
-   The restrictions above apply equally to:
-     - raw / human-readable source code,
-     - compiled binaries, jars, and other build outputs,
-     - any partial extracts, snippets, or copied portions of the Software.
+The credit and link must be displayed where users of your project can readily
+see them, such as in the project interface, documentation, or an accompanying
+credits file. If the software is redistributed, this license and attribution
+must be included with it.
 
-4. NO WARRANTY
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL
-   THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY
-   ARISING FROM THE SOFTWARE.
+3. Contribution of Improvements
+Any improvement or modification you make to this software must be submitted
+as a pull request to:
+https://github.com/DuckDuckG0ose/TheBigScreen
 
-5. TERMINATION
-   Any unauthorised use, copying, distribution, or profit-making terminates
-   any (non-existent) permission immediately. The copyright holder may pursue
-   all legal remedies available.
+This requirement applies whether or not you distribute or publicly use the
+improvement. Submitting a pull request does not guarantee that it will be
+accepted, and does not transfer ownership of your contributions.
 
-By accessing, viewing, or obtaining the Software, you agree to be bound by
-this license. If you do not agree, you must not access, use, copy, or retain
-any part of the Software.
+4. Retention of Notice
+You must retain this license and all existing copyright and attribution
+notices in copies or substantial portions of the software.
+
+5. No Endorsement
+You may not imply that the original project or its owner endorses your
+product or use without prior written permission.
+
+6. Disclaimer
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL
+THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY
+ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+By using, copying, modifying, or distributing the software, you agree to
+these terms. If you do not agree, you may not exercise the permissions
+granted by this license.

@@ -2,6 +2,10 @@
 
 TheBigScreen is a Paper 1.21.x plugin that lets you render live RTMP video streams onto in-game screens constructed of virtual maps and item frames. All rendering is sent client-side via packets only using ProtocolLib, keeping your server's physical world files completely clean.
 
+## Performance & Hosting Recommendation
+> [!WARNING]
+> For the best performance, keep stream FPS and resolution low. Host the stream on a high-bandwidth server, or use a separate Velocity/BungeeCord server to handle the video traffic. High-resolution or high-FPS streams, limited bandwidth, or running the stream on an already busy game server can cause lag for players.
+
 ## Features
 - **Low Impact**: Multi-threaded decode-convert-send pipeline (keeps work off the server thread).
 - **Network Efficient**: Diff-rendering checks only send map packet updates for tiles whose contents have changed.
